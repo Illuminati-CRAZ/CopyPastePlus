@@ -9,7 +9,7 @@ function memory.write(offset, data, step, mirror)
         return(offset) --return same offset to use since nothing is written
     end
 
-    step = step or 1 --non-int step will be fine when utils.CreateScrollVelocity() accepts floats for StartTime
+    step = step or 1
     mirror = mirror or false --setting mirror to true causes effect of sv to be (mostly) negated by an equal and opposite sv and then a 1x sv is placed
 
     if type(data) == "number" then
@@ -139,26 +139,34 @@ function getScrollVelocityAtExactly(time)
     end
 end
 
-function tableToString(table)
-    local result = ""
+function tableToString(thing) --I have sinned
 
-    for i,value in pairs(table) do
-        result = result .. "[" .. i .. "]: " .. value .. ", "
+    local results = {}
+
+    for k, v in pairs(thing) do
+        table.insert(results, "[" .. k .. "]: " .. v)
     end
-    result = result:sub(1,-3)
-
-    return(result)
+    return(table.concat(results, ", "))
 end
 
 function hitObjectsToString(notes)
-    result = ""
+
+    local results = {}
 
     for _, note in pairs(notes) do
-        result = result .. note.StartTime .. "|" .. note.Lane .. ", "
+        table.insert(results, note.StartTime .. "|" .. note.Lane)
     end
-    result = result:sub(1,-3)
+    return(table.concat(results, ", "))
+end
 
-    return(result)
+function has(thing, val) --sinned again
+    for _, value in pairs(thing) do
+        if value == val then
+            return(true)
+        end
+    end
+
+    return(false)
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -166,7 +174,7 @@ end
 function initialize()
     memory.write(INITIALIZE_OFFSET, 1)
 
-    memory.correctDisplacement(MEMORY_LIMIT) --this only gives the correct multiplier now because there's no displacement
+    memory.correctDisplacement(MEMORY_LIMIT) --for some reason doesn't do anything unless by itself?
 end
 
 function getHitObjectsOnLayer(layer)
@@ -180,6 +188,16 @@ function getHitObjectsOnLayer(layer)
     end
 
     return(selection)
+end
+
+function getTimingPointsInGroup(group)
+    local data = retrieveTimingPointGroupData(group)
+
+    local tps = getTimingPoints(data[2], data[3])
+    return(tps)
+end
+
+function getScrollVelocitiesInGroup(group)
 end
 
 function getTimingPoints(start, stop)
@@ -201,7 +219,7 @@ function getScrollVelocities(start, stop)
 
     local selection = {}
     for _, sv in pairs(svs) do
-        if (start <= sv.StartTime) and (tp.StartTime <= stop) then
+        if (start <= sv.StartTime) and (sv.StartTime <= stop) then
             table.insert(selection, sv)
         elseif sv.StartTime > stop then
             return(selection)
@@ -210,8 +228,9 @@ function getScrollVelocities(start, stop)
     return(selection)
 end
 
-function recordHitObjectGroup(layer)
-    if retrieveHitObjectGroupData(layer)[1] then
+function registerHitObjectGroup(layer)
+    local groupdata = retrieveHitObjectGroupData(layer)
+    if type(groupdata) == "table" and groupdata[1] == layer then
         return(false)
     end
 
@@ -226,10 +245,23 @@ function recordHitObjectGroup(layer)
     memory.write(offset, data, DATA_INCREMENT)
 end
 
-function recordTimingPointGroup(group, start, stop)
+function registerTimingPointGroup(group, start, stop)
+    local groupdata = retrieveTimingPointGroupData(group)
+    if type(groupdata) == "table" and (groupdata[1] == -1 or groupdata[1] == -2) then
+        return(false)
+    end
+
+    local tps = getTimingPoints(start, stop)
+    local start = tps[1].StartTime
+    local stop = tps[#tps].StartTime
+
+    local data = {-1, start, stop}
+    local offset = MEMORY_OFFSET_2 + (group - 1)
+
+    memory.write(offset, data, DATA_INCREMENT)
 end
 
-function recordScrollVelocityGroup(group, start, stop)
+function registerScrollVelocityGroup(group, start, stop)
 end
 
 function retrieveHitObjectGroupData(layer)
@@ -242,19 +274,34 @@ function retrieveHitObjectGroupData(layer)
 end
 
 function retrieveTimingPointGroupData(group)
+    local start = MEMORY_OFFSET_2 + (group - 1)
+    local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
+
+    local data = memory.read(start, stop, DATA_INCREMENT)
+
+    return(data)
 end
 
 function retrieveScrollVelocityGroupData(group)
 end
 
---[[function retrieveHitObjects(layer)
-    local notes = getHitObjectsOnLayer(layer)
-end]]--
+function retrieveHitObjectPasteData(layer)
+    local start = MEMORY_OFFSET + (layer - 1) + 3 * DATA_INCREMENT
+    local stop = MEMORY_OFFSET + layer - DATA_INCREMENT
 
-function retrieveTimingPoints(group)
+    local times = memory.read(start, stop, DATA_INCREMENT)
+    return(times)
 end
 
-function retrieveScrollVelocities(group)
+function retrieveTimingPointPasteData(group)
+    local start = MEMORY_OFFSET_2 + (group - 1) + 3 * DATA_INCREMENT
+    local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
+
+    local times = memory.read(start, stop, DATA_INCREMENT)
+    return(times)
+end
+
+function retrieveScrollVelocityPasteData(group)
 end
 
 function registerHitObjectPaste(layer, time)
@@ -263,6 +310,8 @@ function registerHitObjectPaste(layer, time)
 end
 
 function registerTimingPointPaste(group, time)
+    local data = retrieveTimingPointGroupData(group)
+    memory.write(MEMORY_OFFSET_2 + (group - 1) + #data * DATA_INCREMENT, time)
 end
 
 function registerScrollVelocityPaste(group, time)
@@ -271,6 +320,7 @@ end
 function pasteHitObjectGroup(layer, time)
     local notes = getHitObjectsOnLayer(layer)
     local difference = time - retrieveHitObjectGroupData(layer)[2]
+
     local pastenotes = {}
     for _, note in pairs(notes) do
         if note.EndTime == 0 then
@@ -286,6 +336,17 @@ function pasteHitObjectGroup(layer, time)
 end
 
 function pasteTimingPointGroup(group, time)
+    local tps = getTimingPointsInGroup(group)
+    local difference = time - retrieveTimingPointGroupData(group)[2]
+
+    local pastetps = {}
+    for _, tp in pairs(tps) do
+        table.insert(pastetps, utils.CreateTimingPoint(tp.StartTime + difference, tp.Bpm, tp.Signature))
+    end
+
+    actions.PlaceTimingPointBatch(pastetps)
+
+    registerTimingPointPaste(group, time)
 end
 
 function pasteScrollVelocityGroup(group, time)
@@ -312,13 +373,31 @@ function unregisterHitObjectPaste(layer, time)
     memory.write(start, newtimes, DATA_INCREMENT)
 end
 
-function unregisterTimingPointPaste()
+function unregisterTimingPointPaste(group, time)
+    local start = MEMORY_OFFSET_2 + (group - 1) + 3 * DATA_INCREMENT
+    local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
+
+    local data = memory.delete(start, stop, DATA_INCREMENT)
+    local newtimes = {}
+    if type(data) == "number" then
+        if data != time then
+            table.insert(newtimes, data)
+        end
+    else
+        for _, pastetime in pairs(data) do
+            if pastetime != time then
+                table.insert(newtimes, pastetime)
+            end
+        end
+    end
+
+    memory.write(start, newtimes, DATA_INCREMENT)
 end
 
 function unregisterScrollVelocityPaste()
 end
 
-function unpasteHitObjectGroup(layer, time)
+function unpasteHitObjectPaste(layer, time)
     local data = retrieveHitObjectGroupData(layer)
     local length = data[3] - data[2]
 
@@ -346,34 +425,144 @@ function unpasteHitObjectGroup(layer, time)
     end
 end
 
-function unpasteTimingPointGroup()
-end
+function unpasteTimingPointPaste(group, time)
+    local data = retrieveTimingPointGroupData(group)
 
-function unpasteScrollVelocityGroup()
-end
+    local pasteexists = false
+    for i=4, #data do
+        if data[i] == time then
+            pasteexists = true
+        end
+    end
 
-function updateHitObjectGroup(layer, time)
-    unpasteHitObjectGroup(layer, time)
-    pasteHitObjectGroup(layer, time)
-end
+    if pasteexists then
+        local tps = getTimingPoints(time, time + data[3] - data[2])
 
-function updateTimingPointGroup()
-end
-
-function updateScrollVelocityGroup()
-end
-
-function updateAllHitObjectGroups(layer)
-    local data = retrieveHitObjectGroupData(layer)
-    for i = 4, #data do
-        updateHitObjectGroup(layer, data[4]) --the stored pastes cycle
+        actions.RemoveTimingPointBatch(tps)
+        unregisterTimingPointPaste(group, time)
     end
 end
 
-function updateAllTimingPointGroups()
+function unpasteScrollVelocityPaste()
 end
 
-function updateAllScrollVelocityGroups()
+function unpasteAllHitObjectPastes(layer)
+    local times = retrieveHitObjectPasteData(layer)
+
+    for i = 1, #times do
+        unpasteHitObjectPaste(layer, times[i])
+    end
+end
+
+function unpasteAllTimingPointPastes(group)
+    local times = retrieveTimingPointPasteData(group)
+    debug = #times
+    for _, time in pairs(times) do
+        unpasteTimingPointPaste(group, time)
+    end
+end
+
+function unpasteAllScrollVelocityPastes()
+end
+
+function updateHitObjectPaste(layer, time)
+    local times = retrieveHitObjectPasteData(layer)
+    if type(times) == "number" then
+        if times == time then
+            unpasteHitObjectPaste(layer, time)
+            pasteHitObjectGroup(layer, time)
+        end
+    else
+        if has(times, time) then
+            unpasteHitObjectPaste(layer, time)
+            pasteHitObjectGroup(layer, time)
+        end
+    end
+end
+
+function updateTimingPointPaste(group, time)
+    local times = retrieveTimingPointPasteData(group)
+    if type(times) == "number" then
+        if times == time then
+            unpasteTimingPointPaste(group, time)
+            pasteTimingPointGroup(group, time)
+        end
+    else
+        if has(times, time) then
+            unpasteTimingPointPaste(group, time)
+            pasteTimingPointGroup(group, time)
+        end
+    end
+end
+
+function updateScrollVelocityPaste()
+end
+
+function updateAllHitObjectPastes(layer)
+    --buggy, causes weird undo history desync with game
+    local times = retrieveHitObjectPasteData(layer)
+
+    for i = 1, #times do
+        updateHitObjectPaste(layer, times[i])
+    end
+end
+
+function updateAllTimingPointPastes(group)
+    local times = retrieveTimingPointPasteData(group)
+
+    for _, time in pairs(times) do
+        updateTimingPointPaste(group, time)
+    end
+end
+
+function updateAllScrollVelocityPastes()
+end
+
+function unregisterAllHitObjectPastes(layer)
+    local start = MEMORY_OFFSET + (layer - 1) + 3 * DATA_INCREMENT
+    local stop = MEMORY_OFFSET + layer - DATA_INCREMENT
+
+    memory.delete(start, stop, DATA_INCREMENT)
+end
+
+function unregisterAllTimingPointPastes(group)
+    local start = MEMORY_OFFSET_2 + (group - 1) + 3 * DATA_INCREMENT
+    local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
+
+    memory.delete(start, stop, DATA_INCREMENT)
+end
+
+function unregisterAllScrollVelocityPastes()
+end
+
+function unregisterHitObjectGroup(layer)
+    local start = MEMORY_OFFSET + (layer - 1)
+    local stop = start + 2 * DATA_INCREMENT
+
+    memory.delete(start, stop, DATA_INCREMENT)
+end
+
+function unregisterTimingPointGroup(group)
+    local start = MEMORY_OFFSET_2 + (group - 1)
+    local stop = start + 2 * DATA_INCREMENT
+
+    memory.delete(start, stop, DATA_INCREMENT)
+end
+
+function unregisterScrollVelocityGroup()
+end
+
+function updateHitObjectGroup(layer)
+    unregisterHitObjectGroup(layer)
+    registerHitObjectGroup(layer)
+end
+
+function updateTimingPointGroup(group, start, stop)
+    unregisterTimingPointGroup(group)
+    registerTimingPointGroup(group, start, stop)
+end
+
+function updateScrollVelocityGroup(group)
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -399,10 +588,176 @@ DATA_INCREMENT = 2^-7 --smallest increment possible is 2^-7 (.0078125 ms), up to
 
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-function draw()
-    imgui.Begin("CopyPaste+")
+menu = {}
 
-    state.IsWindowHovered = imgui.IsWindowHovered()
+function menu.HitObjects()
+    --this is a mess
+    if imgui.BeginTabItem("Hit Objects") then
+        local layer = state.GetValue("layer") or 1
+
+        _, layer = imgui.InputInt("Layer", layer)
+        if layer < 1 then layer = 1 end
+
+        if not retrieveHitObjectGroupData(layer)[1] then
+            if imgui.Button("Register Layer") then
+                registerHitObjectGroup(layer)
+            end
+        else
+            if advanced then
+                if imgui.Button("Unregister Layer") then
+                    unregisterHitObjectGroup(layer)
+                    unregisterAllHitObjectPastes(layer)
+                end
+            end
+
+            if imgui.Button("Update Layer") then
+                updateHitObjectGroup(layer)
+            end
+
+            if imgui.Button("Go to Layer") then
+                local notes = getHitObjectsOnLayer(layer)
+                actions.GoToObjects(hitObjectsToString(notes))
+            end
+
+            imgui.Separator()
+
+            if imgui.Button("Paste Layer at Current Timestamp") then
+                --need to implement check to make sure paste is able to be registered
+                pasteHitObjectGroup(layer, state.SongTime)
+            end
+
+            if imgui.Button("Update Copy at Current Timestamp") then
+                updateHitObjectPaste(layer, state.SongTime)
+            end
+
+            if imgui.Button("Remove Copy at Current Timestamp") then
+                unpasteHitObjectPaste(layer, state.SongTime)
+            end
+
+            if advanced then
+                if imgui.Button("Unregister Copy at Current Timestamp") then
+                    unregisterHitObjectPaste(layer, state.SongTime)
+                end
+            end
+
+            imgui.Separator()
+
+            if imgui.Button("Update All Copies") then
+                updateAllHitObjectPastes(layer)
+            end
+            imgui.SameLine(0, 4) imgui.TextWrapped("bugged")
+
+            if imgui.Button("Remove All Copies") then
+                unpasteAllHitObjectPastes(layer)
+            end
+            imgui.SameLine(0, 4) imgui.TextWrapped("bugged")
+
+            if advanced then
+                if imgui.Button("Unregister All Copies") then
+                    unregisterAllHitObjectPastes(layer)
+                end
+            end
+        end
+
+        state.SetValue("layer", layer)
+        imgui.EndTabItem()
+    end
+end
+
+function menu.TimingPoints()
+    if imgui.BeginTabItem("Timing Points") then
+        local group = state.GetValue("group") or 1
+        local start = state.GetValue("start") or 0
+        local stop = state.GetValue("stop") or 0
+
+        if imgui.Button("Current", {60, 20}) then start = state.SongTime end imgui.SameLine(0,4) _, start = imgui.InputFloat("Start", start, 1)
+        if imgui.Button(" Current ", {60, 20}) then stop = state.SongTime end imgui.SameLine(0,4) _, stop = imgui.InputFloat("Stop", stop, 1)
+
+        _, group = imgui.InputInt("Group", group)
+        if group < 1 then group = 1 end
+
+        if not retrieveTimingPointGroupData(group)[1] then
+            if imgui.Button("Register Group") then
+                registerTimingPointGroup(group, start, stop)
+            end
+        else
+            if advanced then
+                if imgui.Button("Unregister Group") then
+                    unregisterTimingPointGroup(group)
+                    unregisterAllTimingPointPastes(group)
+                end
+            end
+
+            if imgui.Button("Update Group") then
+                updateTimingPointGroup(group, start, stop)
+            end
+
+            if imgui.Button("Go to Group") then
+            end
+
+            imgui.Separator()
+
+            if imgui.Button("Paste Group at Current Timestamp") then
+                --need to implement check to make sure paste is able to be registered
+                pasteTimingPointGroup(group, state.SongTime)
+            end
+
+            if imgui.Button("Update Copy at Current Timestamp") then
+                updateTimingPointPaste(group, state.SongTime)
+            end
+
+            if imgui.Button("Remove Copy at Current Timestamp") then
+                unpasteTimingPointPaste(group, state.SongTime)
+            end
+
+            if advanced then
+                if imgui.Button("Unregister Copy at Current Timestamp") then
+                    unregisterTimingPointPaste(group, state.SongTime)
+                end
+            end
+
+            imgui.Separator()
+
+            if imgui.Button("Update All Copies") then
+                updateAllTimingPointPastes(group)
+            end
+            imgui.SameLine(0, 4) imgui.TextWrapped("bugged")
+
+            if imgui.Button("Remove All Copies") then
+                unpasteAllTimingPointPastes(group)
+            end
+            imgui.SameLine(0, 4) imgui.TextWrapped("bugged")
+
+            if advanced then
+                if imgui.Button("Unregister All Copies") then
+                    unregisterAllTimingPointPastes(group)
+                end
+            end
+        end
+
+        state.SetValue("group", group)
+        state.SetValue("start", start)
+        state.SetValue("stop", stop)
+        imgui.EndTabItem()
+    end
+end
+
+function menu.ScrollVelocities()
+    if imgui.BeginTabItem("SVs") then
+        imgui.EndTabItem()
+    end
+end
+
+function menu.Other()
+    if imgui.BeginTabItem("Other") then
+        imgui.EndTabItem()
+    end
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+function draw()
+    imgui.Begin("CopyPaste+", true, imgui_window_flags.AlwaysAutoResize)
 
     if memory.read(INITIALIZE_OFFSET) != 1 then
         imgui.TextWrapped("Please do not manually undo any action this plugin makes.")
@@ -414,46 +769,31 @@ function draw()
         return(0)
     end
 
-    local layer = state.GetValue("layer") or 1
-    if layer < 1 then layer = 1 end
+    advanced = state.GetValue("advanced") or false
 
     debug = state.GetValue("debug") or "hi"
 
-    _, layer = imgui.InputInt("Layer", layer)
+    imgui.BeginTabBar("Object Type")
+    menu.HitObjects()
+    menu.TimingPoints()
+    menu.ScrollVelocities()
+    menu.Other()
+    imgui.EndTabBar()
 
-    if imgui.Button("Register Layer") then
-        recordHitObjectGroup(layer)
-    end
-
-    if imgui.Button("Go to Layer") then
-        local notes = hitObjectsToString(getHitObjectsOnLayer(layer))
-        actions.GoToObjects(notes)
-    end
-
-    if imgui.Button("Paste Layer at Current Timestamp") then
-        --need to implement check to make sure paste is able to be registered
-        pasteHitObjectGroup(layer, state.SongTime)
-    end
-
-    if imgui.Button("Remove Copy at Current Timestamp") then
-        unpasteHitObjectGroup(layer, state.SongTime)
-    end
-
-    if imgui.Button("Update Copy") then
-        updateHitObjectGroup(layer, state.SongTime)
-    end
-
-    if imgui.Button("Update All Copies") then
-        updateAllHitObjectGroups(layer)
-    end
+    imgui.separator()
 
     if imgui.Button("Correct Displacement") then
         memory.correctDisplacement(MEMORY_LIMIT)
     end
+    imgui.SameLine(0, 4) imgui.TextWrapped("For some reason seems to only work manually.")
+
+    _, advanced = imgui.Checkbox("Advanced", advanced)
+
+    state.IsWindowHovered = imgui.IsWindowHovered()
 
     imgui.TextWrapped(debug)
 
-    state.SetValue("layer", layer)
+    state.SetValue("advanced", advanced)
 
     state.SetValue("debug", debug)
 
