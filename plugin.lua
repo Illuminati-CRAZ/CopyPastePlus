@@ -1197,7 +1197,7 @@ function window.main()
     state.IsWindowHovered = imgui.IsWindowHovered()
 
     if memory.read(INITIALIZE_OFFSET) != 1 then
-        imgui.Text("Please do not manually undo \nany action this plugin makes.")
+        imgui.Text("Please do not manually undo any action this plugin makes.\nAlso please do not edit any SVs placed before the start of the map.\nThings may break if you do.")
 
         if imgui.Button("Initialize") then
             initialize()
