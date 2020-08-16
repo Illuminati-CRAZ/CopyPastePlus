@@ -66,6 +66,8 @@ function memory.read(start, stop, step)
     end
     if #selection == 1 then --if table of only one element
         return(selection[1]) --return element
+    elseif #selection == 0 then
+        return(nil)
     else --otherwise
         return(selection) --return table of elements
     end
@@ -91,6 +93,8 @@ function memory.delete(start, stop, step)
     actions.RemoveScrollVelocityBatch(svs)
     if #selection == 1 then --if table of only one element
         return(selection[1]) --return element
+    elseif #selection == 0 then
+        return(nil)
     else --otherwise
         return(selection) --return table of elements
     end
@@ -139,13 +143,22 @@ function getScrollVelocityAtExactly(time)
     end
 end
 
-function tableToString(thing) --I have sinned
+function tableToString(thing, includekeys) --I have sinned
+    if includekeys == nil then
+        includekeys = true
+    end
 
     local results = {}
-
-    for k, v in pairs(thing) do
-        table.insert(results, "[" .. k .. "]: " .. v)
+    if includekeys then
+        for k, v in pairs(thing) do
+            table.insert(results, "[" .. k .. "]: " .. v)
+        end
+    else
+        for _, v in pairs(thing) do
+            table.insert(results, v)
+        end
     end
+
     return(table.concat(results, ", "))
 end
 
@@ -177,6 +190,12 @@ function initialize()
     memory.correctDisplacement(MEMORY_LIMIT) --for some reason doesn't do anything unless by itself?
 end
 
+function deinitialize()
+    memory.delete(INITIALIZE_OFFSET)
+    memory.delete(MEMORY_OFFSET, MEMORY_LIMIT)
+    memory.delete(-10000002, -10000001) --delete displacement corrector
+end
+
 function getHitObjectsOnLayer(layer)
     local notes = map.HitObjects
 
@@ -198,6 +217,10 @@ function getTimingPointsInGroup(group)
 end
 
 function getScrollVelocitiesInGroup(group)
+    local data = retrieveScrollVelocityGroupData(group)
+
+    local tps = getScrollVelocities(data[2], data[3])
+    return(tps)
 end
 
 function getTimingPoints(start, stop)
@@ -247,7 +270,7 @@ end
 
 function registerTimingPointGroup(group, start, stop)
     local groupdata = retrieveTimingPointGroupData(group)
-    if type(groupdata) == "table" and (groupdata[1] == -1 or groupdata[1] == -2) then
+    if type(groupdata) == "table" and (groupdata[1] == -1 or groupdata[1] == -2) then --makes sure data isn't paste times
         return(false)
     end
 
@@ -262,6 +285,19 @@ function registerTimingPointGroup(group, start, stop)
 end
 
 function registerScrollVelocityGroup(group, start, stop)
+    local groupdata = retrieveScrollVelocityGroupData(group)
+    if type(groupdata) == "table" and (groupdata[1] == -1 or groupdata[1] == -2) then
+        return(false)
+    end
+
+    local svs = getScrollVelocities(start, stop)
+    local start = svs[1].StartTime
+    local stop = svs[#svs].StartTime
+
+    local data = {-2, start, stop}
+    local offset = MEMORY_OFFSET_2 + (group - 1)
+
+    memory.write(offset, data, DATA_INCREMENT)
 end
 
 function retrieveHitObjectGroupData(layer)
@@ -279,10 +315,22 @@ function retrieveTimingPointGroupData(group)
 
     local data = memory.read(start, stop, DATA_INCREMENT)
 
-    return(data)
+    if type(data) == "table" and data[1] == -1 then
+        return(data)
+    end
 end
 
 function retrieveScrollVelocityGroupData(group)
+    local start = MEMORY_OFFSET_2 + (group - 1)
+    local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
+
+    local data = memory.read(start, stop, DATA_INCREMENT)
+
+    if type(data) == "table" and data[1] == -2 then
+        return(data)
+    else
+        return(nil)
+    end
 end
 
 function retrieveHitObjectPasteData(layer)
@@ -294,6 +342,10 @@ function retrieveHitObjectPasteData(layer)
 end
 
 function retrieveTimingPointPasteData(group)
+    if memory.read(MEMORY_OFFSET_2 + (group - 1)) != -1 then
+        return(nil)
+    end
+
     local start = MEMORY_OFFSET_2 + (group - 1) + 3 * DATA_INCREMENT
     local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
 
@@ -302,6 +354,15 @@ function retrieveTimingPointPasteData(group)
 end
 
 function retrieveScrollVelocityPasteData(group)
+    if memory.read(MEMORY_OFFSET_2 + (group - 1)) != -2 then
+        return(nil)
+    end
+
+    local start = MEMORY_OFFSET_2 + (group - 1) + 3 * DATA_INCREMENT
+    local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
+
+    local times = memory.read(start, stop, DATA_INCREMENT)
+    return(times)
 end
 
 function registerHitObjectPaste(layer, time)
@@ -315,6 +376,8 @@ function registerTimingPointPaste(group, time)
 end
 
 function registerScrollVelocityPaste(group, time)
+    local data = retrieveScrollVelocityGroupData(group)
+    memory.write(MEMORY_OFFSET_2 + (group - 1) + #data * DATA_INCREMENT, time)
 end
 
 function pasteHitObjectGroup(layer, time)
@@ -350,6 +413,17 @@ function pasteTimingPointGroup(group, time)
 end
 
 function pasteScrollVelocityGroup(group, time)
+    local svs = getScrollVelocitiesInGroup(group)
+    local difference = time - retrieveScrollVelocityGroupData(group)[2]
+
+    local pastesvs = {}
+    for _, sv in pairs(svs) do
+        table.insert(pastesvs, utils.CreateScrollVelocity(sv.StartTime + difference, sv.Multiplier))
+    end
+
+    actions.PlaceScrollVelocityBatch(pastesvs)
+
+    registerScrollVelocityPaste(group, time)
 end
 
 function unregisterHitObjectPaste(layer, time)
@@ -374,6 +448,10 @@ function unregisterHitObjectPaste(layer, time)
 end
 
 function unregisterTimingPointPaste(group, time)
+    if memory.read(MEMORY_OFFSET_2 + (group - 1)) != -1 then
+        return(false)
+    end
+
     local start = MEMORY_OFFSET_2 + (group - 1) + 3 * DATA_INCREMENT
     local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
 
@@ -394,7 +472,29 @@ function unregisterTimingPointPaste(group, time)
     memory.write(start, newtimes, DATA_INCREMENT)
 end
 
-function unregisterScrollVelocityPaste()
+function unregisterScrollVelocityPaste(group, time)
+    if memory.read(MEMORY_OFFSET_2 + (group - 1)) != -2 then
+        return(false)
+    end
+
+    local start = MEMORY_OFFSET_2 + (group - 1) + 3 * DATA_INCREMENT
+    local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
+
+    local data = memory.delete(start, stop, DATA_INCREMENT)
+    local newtimes = {}
+    if type(data) == "number" then
+        if data != time then
+            table.insert(newtimes, data)
+        end
+    else
+        for _, pastetime in pairs(data) do
+            if pastetime != time then
+                table.insert(newtimes, pastetime)
+            end
+        end
+    end
+
+    memory.write(start, newtimes, DATA_INCREMENT)
 end
 
 function unpasteHitObjectPaste(layer, time)
@@ -443,7 +543,22 @@ function unpasteTimingPointPaste(group, time)
     end
 end
 
-function unpasteScrollVelocityPaste()
+function unpasteScrollVelocityPaste(group, time)
+    local data = retrieveScrollVelocityGroupData(group)
+
+    local pasteexists = false
+    for i=4, #data do
+        if data[i] == time then
+            pasteexists = true
+        end
+    end
+
+    if pasteexists then
+        local svs = getScrollVelocities(time, time + data[3] - data[2])
+
+        actions.RemoveScrollVelocityBatch(svs)
+        unregisterScrollVelocityPaste(group, time)
+    end
 end
 
 function unpasteAllHitObjectPastes(layer)
@@ -456,13 +571,18 @@ end
 
 function unpasteAllTimingPointPastes(group)
     local times = retrieveTimingPointPasteData(group)
-    debug = #times
+
     for _, time in pairs(times) do
         unpasteTimingPointPaste(group, time)
     end
 end
 
-function unpasteAllScrollVelocityPastes()
+function unpasteAllScrollVelocityPastes(group)
+    local times = retrieveScrollVelocityPasteData(group)
+
+    for _, time in pairs(times) do
+        unpasteScrollVelocityPaste(group, time)
+    end
 end
 
 function updateHitObjectPaste(layer, time)
@@ -495,7 +615,19 @@ function updateTimingPointPaste(group, time)
     end
 end
 
-function updateScrollVelocityPaste()
+function updateScrollVelocityPaste(group, time)
+    local times = retrieveScrollVelocityPasteData(group)
+    if type(times) == "number" then
+        if times == time then
+            unpasteScrollVelocityPaste(group, time)
+            pasteScrollVelocityGroup(group, time)
+        end
+    else
+        if has(times, time) then
+            unpasteScrollVelocityPaste(group, time)
+            pasteScrollVelocityGroup(group, time)
+        end
+    end
 end
 
 function updateAllHitObjectPastes(layer)
@@ -516,6 +648,11 @@ function updateAllTimingPointPastes(group)
 end
 
 function updateAllScrollVelocityPastes()
+    local times = retrieveScrollVelocityPasteData(group)
+
+    for _, time in pairs(times) do
+        updateScrollVelocityPaste(group, time)
+    end
 end
 
 function unregisterAllHitObjectPastes(layer)
@@ -526,13 +663,25 @@ function unregisterAllHitObjectPastes(layer)
 end
 
 function unregisterAllTimingPointPastes(group)
+    if memory.read(MEMORY_OFFSET_2 + (group - 1)) != -1 then
+        return(false)
+    end
+
     local start = MEMORY_OFFSET_2 + (group - 1) + 3 * DATA_INCREMENT
     local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
 
     memory.delete(start, stop, DATA_INCREMENT)
 end
 
-function unregisterAllScrollVelocityPastes()
+function unregisterAllScrollVelocityPastes(group)
+    if memory.read(MEMORY_OFFSET_2 + (group - 1)) != -2 then
+        return(false)
+    end
+
+    local start = MEMORY_OFFSET_2 + (group - 1) + 3 * DATA_INCREMENT
+    local stop = MEMORY_OFFSET_2 + group - DATA_INCREMENT
+
+    memory.delete(start, stop, DATA_INCREMENT)
 end
 
 function unregisterHitObjectGroup(layer)
@@ -543,13 +692,25 @@ function unregisterHitObjectGroup(layer)
 end
 
 function unregisterTimingPointGroup(group)
+    if memory.read(MEMORY_OFFSET_2 + (group - 1)) != -1 then
+        return(false)
+    end
+
     local start = MEMORY_OFFSET_2 + (group - 1)
     local stop = start + 2 * DATA_INCREMENT
 
     memory.delete(start, stop, DATA_INCREMENT)
 end
 
-function unregisterScrollVelocityGroup()
+function unregisterScrollVelocityGroup(group)
+    if memory.read(MEMORY_OFFSET_2 + (group - 1)) != -2 then
+        return(false)
+    end
+
+    local start = MEMORY_OFFSET_2 + (group - 1)
+    local stop = start + 2 * DATA_INCREMENT
+
+    memory.delete(start, stop, DATA_INCREMENT)
 end
 
 function updateHitObjectGroup(layer)
@@ -562,7 +723,109 @@ function updateTimingPointGroup(group, start, stop)
     registerTimingPointGroup(group, start, stop)
 end
 
-function updateScrollVelocityGroup(group)
+function updateScrollVelocityGroup(group, start, stop)
+    unregisterScrollVelocityGroup(group)
+    registerScrollVelocityGroup(group, start, stop)
+end
+
+function hitObjectGroupRegistered(layer)
+    local data = retrieveHitObjectGroupData(layer)
+    if data and data[1] == layer then
+        return(true)
+    else
+        return(false)
+    end
+end
+
+function timingPointGroupRegistered(group)
+    local data = retrieveTimingPointGroupData(group)
+    if data and data[1] == -1 then
+        return(true)
+    else
+        return(false)
+    end
+end
+
+function scrollVelocityGroupRegistered(group)
+    local data = retrieveScrollVelocityGroupData(group)
+    if data and data[1] == -2 then
+        return(true)
+    else
+        return(false)
+    end
+end
+
+function retrieveAllHitObjectGroups()
+    local data = memory.read(MEMORY_OFFSET, MEMORY_OFFSET_2 - 1)
+
+    if type(data) == "table" then
+        return(data)
+    else
+        return({data})
+    end
+end
+
+function retrieveAllTimingPointGroups()
+    local data = memory.read(MEMORY_OFFSET_2, MEMORY_LIMIT - 1)
+
+    local selection = {}
+    for i, objecttype in pairs(data) do
+        if objecttype == -1 then
+            table.insert(selection, i)
+        end
+    end
+
+    return(selection)
+end
+
+function retrieveAllScrollVelocityGroups()
+    local data = memory.read(MEMORY_OFFSET_2, MEMORY_LIMIT - 1)
+
+    local selection = {}
+    for i, objecttype in pairs(data) do
+        if objecttype == -2 then
+            table.insert(selection, i)
+        end
+    end
+
+    return(selection)
+end
+
+function retrieveAllHitObjectGroupsData()
+    local layers = retrieveAllHitObjectGroups()
+
+    local result = {}
+    for _, layer in pairs(layers) do
+        table.insert(result, retrieveHitObjectGroupData(layer))
+    end
+
+    return(result)
+end
+
+function retrieveAllTimingPointGroupsData()
+    local groups = retrieveAllTimingPointGroups()
+
+    local result = {}
+    for _, group in pairs(groups) do
+        local data = retrieveTimingPointGroupData(group)
+        data[1] = group
+        table.insert(result, data)
+    end
+
+    return(result)
+end
+
+function retrieveAllScrollVelocityGroupsData()
+    local groups = retrieveAllScrollVelocityGroups()
+
+    local result = {}
+    for _, group in pairs(groups) do
+        local data = retrieveScrollVelocityGroupData(group)
+        data[1] = group
+        table.insert(result, data)
+    end
+
+    return(result)
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -589,8 +852,10 @@ DATA_INCREMENT = 2^-7 --smallest increment possible is 2^-7 (.0078125 ms), up to
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 menu = {}
+menu.main = {}
+menu.groups = {}
 
-function menu.HitObjects()
+function menu.main.HitObjects()
     --this is a mess
     if imgui.BeginTabItem("Hit Objects") then
         local layer = state.GetValue("layer") or 1
@@ -598,7 +863,9 @@ function menu.HitObjects()
         _, layer = imgui.InputInt("Layer", layer)
         if layer < 1 then layer = 1 end
 
-        if not retrieveHitObjectGroupData(layer)[1] then
+        state.SetValue("layer", layer)
+
+        if not hitObjectGroupRegistered(layer) then
             if imgui.Button("Register Layer") then
                 registerHitObjectGroup(layer)
             end
@@ -659,14 +926,13 @@ function menu.HitObjects()
             end
         end
 
-        state.SetValue("layer", layer)
         imgui.EndTabItem()
     end
 end
 
-function menu.TimingPoints()
+function menu.main.TimingPoints()
     if imgui.BeginTabItem("Timing Points") then
-        local group = state.GetValue("group") or 1
+        local group = state.GetValue("tpgroup") or 1
         local start = state.GetValue("start") or 0
         local stop = state.GetValue("stop") or 0
 
@@ -676,9 +942,15 @@ function menu.TimingPoints()
         _, group = imgui.InputInt("Group", group)
         if group < 1 then group = 1 end
 
-        if not retrieveTimingPointGroupData(group)[1] then
-            if imgui.Button("Register Group") then
-                registerTimingPointGroup(group, start, stop)
+        state.SetValue("tpgroup", group)
+        state.SetValue("start", start)
+        state.SetValue("stop", stop)
+
+        if not timingPointGroupRegistered(group) then
+            if not scrollVelocityGroupRegistered(group) then
+                if imgui.Button("Register Group") then
+                    registerTimingPointGroup(group, start, stop)
+                end
             end
         else
             if advanced then
@@ -691,8 +963,11 @@ function menu.TimingPoints()
             if imgui.Button("Update Group") then
                 updateTimingPointGroup(group, start, stop)
             end
+            imgui.SameLine(0, 4) imgui.TextWrapped("bugged")
 
             if imgui.Button("Go to Group") then
+                local data = retrieveTimingPointGroupData(group)
+                actions.GoToObjects(data[2])
             end
 
             imgui.Separator()
@@ -735,32 +1010,194 @@ function menu.TimingPoints()
             end
         end
 
-        state.SetValue("group", group)
+        imgui.EndTabItem()
+    end
+end
+
+function menu.main.ScrollVelocities()
+    if imgui.BeginTabItem("SVs") then
+        local group = state.GetValue("svgroup") or 1
+        local start = state.GetValue("start") or 0
+        local stop = state.GetValue("stop") or 0
+
+        if imgui.Button("Current", {60, 20}) then start = state.SongTime end imgui.SameLine(0,4) _, start = imgui.InputFloat("Start", start, 1)
+        if imgui.Button(" Current ", {60, 20}) then stop = state.SongTime end imgui.SameLine(0,4) _, stop = imgui.InputFloat("Stop", stop, 1)
+
+        _, group = imgui.InputInt("Group", group)
+        if group < 1 then group = 1 end
+
+        state.SetValue("svgroup", group)
         state.SetValue("start", start)
         state.SetValue("stop", stop)
+
+        if not scrollVelocityGroupRegistered(group) then
+            if not timingPointGroupRegistered(group) then
+                if imgui.Button("Register Group") then
+                    registerScrollVelocityGroup(group, start, stop)
+                end
+            end
+        else
+            if advanced then
+                if imgui.Button("Unregister Group") then
+                    unregisterScrollVelocityGroup(group)
+                    unregisterAllScrollVelocityPastes(group)
+                end
+            end
+
+            if imgui.Button("Update Group") then
+                updateScrollVelocityGroup(group, start, stop)
+            end
+            imgui.SameLine(0, 4) imgui.TextWrapped("bugged")
+
+            if imgui.Button("Go to Group") then
+                local data = retrieveScrollVelocityGroupData(group)
+                actions.GoToObjects(data[2])
+            end
+
+            imgui.Separator()
+
+            if imgui.Button("Paste Group at Current Timestamp") then
+                --need to implement check to make sure paste is able to be registered
+                pasteScrollVelocityGroup(group, state.SongTime)
+            end
+
+            if imgui.Button("Update Copy at Current Timestamp") then
+                updateScrollVelocityPaste(group, state.SongTime)
+            end
+
+            if imgui.Button("Remove Copy at Current Timestamp") then
+                unpasteScrollVelocityPaste(group, state.SongTime)
+            end
+
+            if advanced then
+                if imgui.Button("Unregister Copy at Current Timestamp") then
+                    unregisterScrollVelocityPaste(group, state.SongTime)
+                end
+            end
+
+            imgui.Separator()
+
+            if imgui.Button("Update All Copies") then
+                updateAllScrollVelocityPastes(group)
+            end
+            imgui.SameLine(0, 4) imgui.TextWrapped("bugged")
+
+            if imgui.Button("Remove All Copies") then
+                unpasteAllScrollVelocityPastes(group)
+            end
+            imgui.SameLine(0, 4) imgui.TextWrapped("bugged")
+
+            if advanced then
+                if imgui.Button("Unregister All Copies") then
+                    unregisterAllScrollVelocityPastes(group)
+                end
+            end
+        end
+
         imgui.EndTabItem()
     end
 end
 
-function menu.ScrollVelocities()
-    if imgui.BeginTabItem("SVs") then
-        imgui.EndTabItem()
-    end
-end
-
-function menu.Other()
+function menu.main.Other()
     if imgui.BeginTabItem("Other") then
+        if imgui.Button("Deinitialize") then
+            imgui.OpenPopup("Are you sure?")
+            imgui.EndPopup()
+        end
+        if imgui.BeginPopupModal("Are you sure?", true, imgui_window_flags.AlwaysAutoResize) then
+            state.IsWindowHovered = imgui.IsWindowHovered()
+            imgui.Text("This will delete all memory associated with this plugin.")
+            if imgui.Button("Yes") then
+                deinitialize()
+                imgui.CloseCurrentPopup()
+            end
+            imgui.SameLine(0, 4)
+            if imgui.Button("No") then
+                imgui.CloseCurrentPopup()
+            end
+            imgui.EndPopup()
+        end
+
+        if imgui.Button("Correct Displacement") then
+            memory.correctDisplacement(MEMORY_LIMIT)
+        end
+        imgui.SameLine(0, 4) imgui.TextWrapped("For some reason seems to only work manually.")
+
+        _, advanced = imgui.Checkbox("Advanced", advanced)
+
+        _, groups = imgui.Checkbox("Show Group Info", groups)
+
+        imgui.EndTabItem()
+    end
+end
+
+function menu.groups.HitObjects()
+    if imgui.BeginTabItem("Hit Objects") then
+        gui.groups.TableHeader()
+        gui.groups.TableColumns(retrieveAllHitObjectGroupsData())
+        imgui.EndTabItem()
+    end
+end
+
+function menu.groups.TimingPoints()
+    if imgui.BeginTabItem("Timing Points") then
+        gui.groups.TableHeader()
+        gui.groups.TableColumns(retrieveAllTimingPointGroupsData())
+        imgui.EndTabItem()
+    end
+end
+
+function menu.groups.ScrollVelocities()
+    if imgui.BeginTabItem("SVs") then
+        gui.groups.TableHeader()
+        gui.groups.TableColumns(retrieveAllScrollVelocityGroupsData())
         imgui.EndTabItem()
     end
 end
 
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-function draw()
+gui = {}
+gui.main = {}
+gui.groups = {}
+
+function gui.groups.TableColumns(data)
+    imgui.BeginChild("chart")
+    imgui.Columns(4)
+    for _, group in pairs(data) do
+        imgui.Text(group[1]);                               imgui.NextColumn();
+        imgui.Text(group[2]);                               imgui.NextColumn();
+        imgui.Text(group[3]);                               imgui.NextColumn();
+        for i = 1, 3 do
+            table.remove(group, 1)
+        end
+        imgui.TextWrapped(tableToString(group, false));     imgui.NextColumn();
+    end
+    imgui.Columns(1)
+    imgui.EndChild()
+end
+
+function gui.groups.TableHeader()
+    imgui.Columns(4)
+    imgui.Text("Group");                                    imgui.NextColumn();
+    imgui.Text("Start");                                    imgui.NextColumn();
+    imgui.Text("End");                                      imgui.NextColumn();
+    imgui.Text("Copies");
+    imgui.Columns(1)
+    imgui.Separator()
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+window = {}
+
+function window.main()
     imgui.Begin("CopyPaste+", true, imgui_window_flags.AlwaysAutoResize)
 
+    state.IsWindowHovered = imgui.IsWindowHovered()
+
     if memory.read(INITIALIZE_OFFSET) != 1 then
-        imgui.TextWrapped("Please do not manually undo any action this plugin makes.")
+        imgui.Text("Please do not manually undo \nany action this plugin makes.")
 
         if imgui.Button("Initialize") then
             initialize()
@@ -770,32 +1207,46 @@ function draw()
     end
 
     advanced = state.GetValue("advanced") or false
+    groups = state.GetValue("groups") or false
 
-    debug = state.GetValue("debug") or "hi"
+    --debug = state.GetValue("debug") or "hi"
+
+    --imgui.TextWrapped(debug)
 
     imgui.BeginTabBar("Object Type")
-    menu.HitObjects()
-    menu.TimingPoints()
-    menu.ScrollVelocities()
-    menu.Other()
+    menu.main.HitObjects()
+    menu.main.TimingPoints()
+    menu.main.ScrollVelocities()
+    menu.main.Other()
     imgui.EndTabBar()
 
-    imgui.separator()
+    state.SetValue("advanced", advanced)
+    state.SetValue("groups", groups)
 
-    if imgui.Button("Correct Displacement") then
-        memory.correctDisplacement(MEMORY_LIMIT)
-    end
-    imgui.SameLine(0, 4) imgui.TextWrapped("For some reason seems to only work manually.")
+    --state.SetValue("debug", debug)
 
-    _, advanced = imgui.Checkbox("Advanced", advanced)
+    imgui.End()
+end
+
+function window.groups()
+    imgui.Begin("Groups")
 
     state.IsWindowHovered = imgui.IsWindowHovered()
 
-    imgui.TextWrapped(debug)
-
-    state.SetValue("advanced", advanced)
-
-    state.SetValue("debug", debug)
+    imgui.BeginTabBar("Groups")
+    menu.groups.HitObjects()
+    menu.groups.TimingPoints()
+    menu.groups.ScrollVelocities()
+    imgui.EndTabBar()
 
     imgui.End()
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+function draw()
+    window.main()
+    if groups then
+        window.groups()
+    end
 end
